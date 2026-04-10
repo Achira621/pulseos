@@ -11,6 +11,7 @@ class IORequest:
     priority: int = 5
     burst_time: float = 10.0
     status: str = "pending"  # pending, running, completed
+    target_device: str = "Disk Drive"
 
 @dataclass
 class DiskState:

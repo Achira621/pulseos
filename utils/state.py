@@ -102,7 +102,7 @@ def initialize_connected_devices() -> None:
         return
 
 
-def add_io_request(track: int, priority: int, burst_time: float = 10.0) -> bool:
+def add_io_request(track: int, priority: int, burst_time: float = 10.0, target_device: str = "Disk Drive") -> bool:
     try:
         state = init_system_state()
         state["request_counter"] += 1
@@ -112,13 +112,10 @@ def add_io_request(track: int, priority: int, burst_time: float = 10.0) -> bool:
             arrival_time=float(state["request_counter"]),
             priority=int(priority),
             burst_time=float(burst_time),
+            target_device=target_device
         )
         state["io_queue"].append(request)
-        # Tie seek-based queue to disk endpoint when available.
-        disk_key = "Disk Drive" if "Disk Drive" in state["device_queues"] else "Disk"
-        if disk_key in state["device_queues"]:
-            state["device_queues"][disk_key].append(int(track))
-        state["device_event_log"].append(f"[QUEUE UPDATE] {disk_key} <- track {int(track)}")
+        state["device_event_log"].append(f"[QUEUE UPDATE] Universal I/O Queue <- {target_device} at track {int(track)}")
         return True
     except Exception:
         return False
@@ -205,8 +202,7 @@ def clear_io_queue() -> None:
         state["io_queue"] = []
         state["last_result"] = None
         for device_name in list(state["device_queues"].keys()):
-            if device_name in {"Disk Drive", "Disk", "Printer", "USB Drive", "Scanner"}:
-                state["device_queues"][device_name] = []
+            state["device_queues"][device_name] = []
     except Exception:
         return
 

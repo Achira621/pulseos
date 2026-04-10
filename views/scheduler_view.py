@@ -1,6 +1,8 @@
 """Scheduler execution layer with teaching overlays and comparison."""
 
 import streamlit as st
+import plotly.graph_objects as go
+import plotly.express as px
 
 from core.metrics import calculate_result_metrics
 from core.scheduler import compare_algorithms, run_algorithm
@@ -65,6 +67,37 @@ def _render_stepwise_explainer(result) -> None:
         if not result or not result.execution_order:
             st.caption("Run an algorithm to view step-by-step head movement.")
             return
+            
+        # Plotly chart for head movement
+        steps = list(range(len(result.head_positions)))
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=result.head_positions,
+            y=steps,
+            mode='lines+markers+text',
+            line=dict(color='#00ffcc', width=3),
+            marker=dict(size=10, color='#ff00ff', symbol='diamond'),
+            text=[str(p) for p in result.head_positions],
+            textposition="top center",
+            name='Head Path'
+        ))
+        
+        # Reverse Y axis so step 0 is at the top
+        max_x = max(result.head_positions) if result.head_positions else 200
+        fig.update_layout(
+            title="Disk Head Movement Path",
+            xaxis_title="Track Number",
+            yaxis_title="Step Sequence",
+            yaxis=dict(autorange="reversed", tickmode="linear"),
+            xaxis=dict(range=[0, max_x + 50]),
+            template="plotly_dark",
+            margin=dict(l=40, r=40, t=40, b=40),
+            height=400,
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
         rows = []
         for idx, req_id in enumerate(result.execution_order):
             rows.append(
@@ -116,47 +149,55 @@ def render_scheduler_view() -> None:
 
         a1, a2, a3 = st.columns(3)
         if a1.button("ADD I/O REQUEST", use_container_width=True):
-            if target_device in {"Disk Drive", "Disk"}:
-                if add_io_request(int(track), int(priority), float(burst)):
-                    st.success(f"Disk request added at track {int(track)}.")
-                    st.rerun()
-                else:
-                    st.error("Failed to add request.")
+            if add_io_request(int(track), int(priority), float(burst), target_device):
+                st.success(f"{target_device} request added at track {int(track)}.")
+                st.rerun()
             else:
-                payload = f"Job{state['request_counter'] + 1}-P{priority}"
-                if add_device_request(target_device, payload):
-                    st.success(f"{target_device} request added ({payload}).")
-                    st.rerun()
-                else:
-                    st.error("Failed to add request.")
+                st.error("Failed to add request.")
         if a2.button("REMOVE LAST REQUEST", use_container_width=True):
-            if target_device in {"Disk Drive", "Disk"}:
-                if queue and remove_io_request(queue[-1].request_id):
-                    st.success("Last disk request removed.")
-                    st.rerun()
-                else:
-                    st.info("No removable disk request found.")
+            if queue and remove_io_request(queue[-1].request_id):
+                st.success("Last request removed.")
+                st.rerun()
             else:
-                if pop_last_device_request(target_device):
-                    st.success(f"Last request removed from {target_device}.")
-                    st.rerun()
-                else:
-                    st.info(f"No removable request found for {target_device}.")
+                st.info("No removable request found in queue.")
         if a3.button("CLEAR QUEUE", use_container_width=True):
             clear_io_queue()
             st.rerun()
 
-        st.markdown("### > DEVICE-AWARE QUEUES")
-        device_queues = state.get("device_queues", {})
-        for name in device_names:
-            st.markdown(f"**{name}** -> {device_queues.get(name, [])}")
+        st.markdown("### > UNIFIED I/O QUEUE")
         if queue:
-            st.markdown("#### Disk Queue Details")
+            st.markdown("#### Queue Details")
             st.dataframe(
-                [{"ID": req.request_id, "Track": req.track, "Priority": req.priority, "Burst": req.burst_time} for req in queue],
+                [{"ID": req.request_id, "Target Device": getattr(req, "target_device", "Unknown"), "Logical Track/Address": req.track, "Priority": req.priority, "Burst": req.burst_time} for req in queue],
                 use_container_width=True,
                 hide_index=True,
             )
+            
+            # Queue distribution visualization
+            tracks = [req.track for req in queue]
+            priorities = [req.priority for req in queue]
+            ids = [req.request_id for req in queue]
+            
+            fig_queue = px.scatter(
+                x=tracks,
+                y=[0] * len(tracks), # 1D plot
+                size=[max(1, p * 3) for p in priorities], 
+                color=priorities,
+                text=ids,
+                title="Universal Queue Scatter (Track/Address vs Priority)",
+                labels={'x': 'Logical Track/Address', 'y': ''},
+                template="plotly_dark",
+                color_continuous_scale="Viridis"
+            )
+            fig_queue.update_traces(textposition='top center', marker=dict(symbol='circle', opacity=0.8))
+            fig_queue.update_layout(
+                yaxis=dict(showticklabels=False, showgrid=False, zeroline=False),
+                height=220, 
+                margin=dict(l=20, r=20, t=40, b=20),
+                paper_bgcolor="rgba(0,0,0,0)", 
+                plot_bgcolor="rgba(0,0,0,0)"
+            )
+            st.plotly_chart(fig_queue, use_container_width=True)
 
         # Algorithm control + teaching overlay
         st.markdown("### > ALGORITHM CONTROL")
@@ -181,38 +222,31 @@ def render_scheduler_view() -> None:
         current_algo = state["active_algorithm"]
         notes = ALGO_NOTES.get(current_algo, ALGO_NOTES["FCFS"])
         st.markdown("### > TEACHING OVERLAY")
-        st.markdown("<div class='layer-subpanel'>", unsafe_allow_html=True)
-        st.write(f"Algorithm: {current_algo}")
-        st.caption(f"What it does: {notes['what']}")
-        st.caption(f"Why used: {notes['why']}")
-        st.code(notes["logic"], language="text")
-        st.caption(f"Pros: {notes['pros']}")
-        st.caption(f"Cons: {notes['cons']}")
-        st.markdown("</div>", unsafe_allow_html=True)
+        
+        st.info(f"**What it does:** {notes['what']}\n\n**Why used:** {notes['why']}")
+        
+        col_pros, col_cons = st.columns(2)
+        with col_pros:
+            st.success(f"**Pros:** {notes['pros']}")
+        with col_cons:
+            st.warning(f"**Cons:** {notes['cons']}")
+            
+        with st.expander("Show Logic Pseudo-code"):
+            st.code(notes["logic"], language="text")
 
         use_priority = st.checkbox("Apply priority sorting before algorithm", value=False)
         execution_queue = _priority_sorted(queue) if use_priority else list(queue)
 
         run_col, compare_col = st.columns(2)
         if run_col.button("RUN SELECTED ALGORITHM", use_container_width=True):
-            disk_ready = any(name in {"Disk Drive", "Disk"} for name in device_names)
-            if not disk_ready:
-                st.warning("No Disk device connected. Serving non-disk queues in FCFS order only.")
-                for name in device_names:
-                    if name in {"Disk Drive", "Disk"}:
-                        continue
-                    items = state.get("device_queues", {}).get(name, [])
-                    if items:
-                        state["device_event_log"].append(f"[SERVICE] {name} -> {items[0]}")
-                st.success("Non-disk device queues serviced.")
-            elif not queue:
-                st.error("Disk queue empty. Cannot execute disk scheduling.")
+            if not queue:
+                st.error("Unified I/O queue is empty. Cannot execute scheduling.")
             else:
                 result = run_algorithm(current_algo, execution_queue, state["current_head"])
                 state["last_result"] = result
                 if result.head_positions:
                     state["current_head"] = result.head_positions[-1]
-                state["device_event_log"].append(f"[SERVICE] Disk -> {result.execution_order}")
+                state["device_event_log"].append(f"[SERVICE] Unified Queue -> {result.execution_order}")
                 st.success("Execution complete.")
 
         if compare_col.button("COMPARE FCFS / SSTF / SCAN", use_container_width=True):
@@ -220,9 +254,18 @@ def render_scheduler_view() -> None:
                 st.warning("Queue empty. Add requests for comparison.")
             else:
                 results = compare_algorithms(execution_queue, state["current_head"])
+                
+                algo_names = []
+                total_seeks = []
+                avg_seeks = []
+                
                 rows = []
                 for algo_name, result in results.items():
                     stats = calculate_result_metrics(result)
+                    algo_names.append(algo_name)
+                    total_seeks.append(round(stats["total_seek"], 2))
+                    avg_seeks.append(round(stats["average_seek"], 2))
+                    
                     rows.append(
                         {
                             "Algorithm": algo_name,
@@ -232,6 +275,27 @@ def render_scheduler_view() -> None:
                         }
                     )
                 st.markdown("#### Performance Comparison")
+                
+                # Bar chart for Total Seek Time
+                fig = px.bar(
+                    x=algo_names, 
+                    y=total_seeks, 
+                    text=total_seeks,
+                    labels={'x': 'Algorithm', 'y': 'Total Seek Time'},
+                    title="Total Seek Time Comparison",
+                    template="plotly_dark",
+                    color=algo_names,
+                    color_discrete_sequence=['#00ffcc', '#ff00ff', '#ffff00']
+                )
+                fig.update_traces(textposition='outside')
+                fig.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)", 
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    height=350,
+                    margin=dict(l=20, r=20, t=40, b=20)
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                
                 st.dataframe(rows, use_container_width=True, hide_index=True)
                 st.caption("Lower total seek time = better movement efficiency in this simulation.")
 
