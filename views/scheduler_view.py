@@ -25,6 +25,7 @@ ALGO_NOTES = {
         "logic": "Process queue from first to last.",
         "pros": "Easy to implement, no starvation in simple queues.",
         "cons": "Can produce high seek movement.",
+        "analogy": "Like a checkout line at a grocery store - first come, first served.",
     },
     "SSTF": {
         "what": "Picks the request closest to current head position.",
@@ -32,6 +33,7 @@ ALGO_NOTES = {
         "logic": "Choose minimum |current_head - request_track| repeatedly.",
         "pros": "Fast average seek behavior.",
         "cons": "Far requests may wait too long (starvation risk).",
+        "analogy": "Like a delivery driver making stops at the closest house next, avoiding driving back and forth.",
     },
     "SCAN": {
         "what": "Moves head in one direction servicing tracks, then reverses.",
@@ -39,6 +41,7 @@ ALGO_NOTES = {
         "logic": "Sort requests by track and traverse like an elevator.",
         "pros": "Predictable and fairer than SSTF.",
         "cons": "Can still travel long distances at queue edges.",
+        "analogy": "Like an elevator picking up passengers while traveling up, then doing the same on the way down.",
     },
 }
 
@@ -111,6 +114,136 @@ def _render_stepwise_explainer(result) -> None:
         st.dataframe(rows, use_container_width=True, hide_index=True)
     except Exception:
         st.caption("Stepwise movement view unavailable.")
+
+def _render_dedicated_panel(algo_name: str, result) -> None:
+    notes = ALGO_NOTES.get(algo_name, {})
+    
+    st.markdown(f"#### {algo_name} Focus View")
+    st.info(f"**What it does:** {notes.get('what', '')}\n\n**Logic:** {notes.get('logic', '')}\n\n**Analogy:** {notes.get('analogy', '')}")
+    col_pros, col_cons = st.columns(2)
+    with col_pros:
+        st.success(f"**Pros:** {notes.get('pros', '')}")
+    with col_cons:
+        st.warning(f"**Cons:** {notes.get('cons', '')}")
+        
+    if not result or not result.execution_order:
+        st.caption("Add requests to the queue to see simulation.")
+        return
+        
+    num_steps = len(result.head_positions)
+    st.markdown("#### Live Simulation")
+    
+    # Control Live Simulation
+    step_idx = st.slider(f"{algo_name} Simulation Step", min_value=0, max_value=num_steps, value=num_steps, key=f"slider_{algo_name}")
+    
+    if step_idx > 0:
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            rows = []
+            cumulative_time = 0
+            for idx in range(step_idx):
+                cumulative_time += result.seek_times[idx]
+                rows.append({
+                    "Step": idx + 1,
+                    "Head Pos": result.head_positions[idx],
+                    "Target ID": result.execution_order[idx],
+                    "Seek Dist": round(result.seek_times[idx], 2),
+                    "Total Time": round(result.completion_times[idx], 2)
+                })
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+            
+        with c2:
+            steps = list(range(step_idx))
+            x_data = result.head_positions[:step_idx]
+            
+            fig = go.Figure()
+            # Full path faint
+            fig.add_trace(go.Scatter(
+                x=result.head_positions,
+                y=list(range(num_steps)),
+                mode='lines',
+                line=dict(color='rgba(255,255,255,0.1)', width=1, dash='dot'),
+                hoverinfo='skip',
+                showlegend=False
+            ))
+            
+            # Simulated path
+            fig.add_trace(go.Scatter(
+                x=x_data,
+                y=steps,
+                mode='lines+markers+text',
+                line=dict(color='#00ffcc', width=3),
+                marker=dict(size=10, color='#ff00ff', symbol='diamond'),
+                text=[str(p) for p in x_data],
+                textposition="top center",
+                name='Simulated Path'
+            ))
+            
+            max_x = max(result.head_positions) if result.head_positions else 200
+            fig.update_layout(
+                title=f"Path execution up to Step {step_idx}/{num_steps}",
+                xaxis_title="Track Number",
+                yaxis_title="Step Sequence",
+                yaxis=dict(autorange="reversed", tickmode="linear"),
+                xaxis=dict(range=[0, max_x + 50]),
+                template="plotly_dark",
+                margin=dict(l=40, r=40, t=40, b=40),
+                height=350,
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Move the slider to start the simulation.")
+
+def _render_performance_summary(results) -> None:
+    algo_names = []
+    total_seeks = []
+    avg_seeks = []
+    
+    rows = []
+    for algo_name, result in results.items():
+        if not result.execution_order:
+            continue
+        stats = calculate_result_metrics(result)
+        algo_names.append(algo_name)
+        total_seeks.append(round(stats["total_seek"], 2))
+        avg_seeks.append(round(stats["average_seek"], 2))
+        
+        rows.append(
+            {
+                "Algorithm": algo_name,
+                "Total Seek Time": round(stats["total_seek"], 2),
+                "Avg Seek Time": round(stats["average_seek"], 2),
+            }
+        )
+        
+    if not rows:
+        st.caption("No requests to calculate performance.")
+        return
+        
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    with c2:
+        fig = px.bar(
+            x=algo_names, 
+            y=total_seeks, 
+            text=total_seeks,
+            labels={'x': 'Algorithm', 'y': 'Total Seek Time'},
+            title="Total Seek Time Comparison",
+            template="plotly_dark",
+            color=algo_names,
+            color_discrete_sequence=['#00ffcc', '#ff00ff', '#ffff00']
+        )
+        fig.update_traces(textposition='outside')
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)", 
+            plot_bgcolor="rgba(0,0,0,0)",
+            height=250,
+            margin=dict(l=20, r=20, t=40, b=20)
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
 
 def render_scheduler_view() -> None:
@@ -199,108 +332,128 @@ def render_scheduler_view() -> None:
             )
             st.plotly_chart(fig_queue, use_container_width=True)
 
-        # Algorithm control + teaching overlay
-        st.markdown("### > ALGORITHM CONTROL")
-        b1, b2, b3 = st.columns(3)
-        if b1.button("FCFS", use_container_width=True):
-            state["active_algorithm"] = "FCFS"
-        if b2.button("SSTF", use_container_width=True):
-            state["active_algorithm"] = "SSTF"
-        if b3.button("SCAN", use_container_width=True):
-            state["active_algorithm"] = "SCAN"
-
-        if st.button("Auto Optimize", type="primary", use_container_width=True):
-            chosen = _auto_select_algorithm(len(queue))
-            state["active_algorithm"] = chosen
-            if chosen == "SSTF":
-                st.success("System selected SSTF because it minimizes seek time by choosing closest request.")
-            elif chosen == "SCAN":
-                st.success("System selected SCAN for large queues to balance movement and fairness.")
-            else:
-                st.success("System selected FCFS for small queue simplicity.")
-
-        current_algo = state["active_algorithm"]
-        notes = ALGO_NOTES.get(current_algo, ALGO_NOTES["FCFS"])
-        st.markdown("### > TEACHING OVERLAY")
-        
-        st.info(f"**What it does:** {notes['what']}\n\n**Why used:** {notes['why']}")
-        
-        col_pros, col_cons = st.columns(2)
-        with col_pros:
-            st.success(f"**Pros:** {notes['pros']}")
-        with col_cons:
-            st.warning(f"**Cons:** {notes['cons']}")
-            
-        with st.expander("Show Logic Pseudo-code"):
-            st.code(notes["logic"], language="text")
-
         use_priority = st.checkbox("Apply priority sorting before algorithm", value=False)
         execution_queue = _priority_sorted(queue) if use_priority else list(queue)
 
-        run_col, compare_col = st.columns(2)
-        if run_col.button("RUN SELECTED ALGORITHM", use_container_width=True):
-            if not queue:
-                st.error("Unified I/O queue is empty. Cannot execute scheduling.")
-            else:
-                result = run_algorithm(current_algo, execution_queue, state["current_head"])
-                state["last_result"] = result
-                if result.head_positions:
-                    state["current_head"] = result.head_positions[-1]
-                state["device_event_log"].append(f"[SERVICE] Unified Queue -> {result.execution_order}")
-                st.success("Execution complete.")
+        st.markdown("### > SCHEDULER VIEW MODES")
+        mode = st.radio("Mode Selection", ["Unified Mode", "Dedicated Mode"], horizontal=True, label_visibility="collapsed")
+        st.divider()
 
-        if compare_col.button("COMPARE FCFS / SSTF / SCAN", use_container_width=True):
-            if not queue:
-                st.warning("Queue empty. Add requests for comparison.")
-            else:
-                results = compare_algorithms(execution_queue, state["current_head"])
+        if mode == "Unified Mode":
+            # Algorithm control + teaching overlay
+            st.markdown("### > ALGORITHM CONTROL")
+            b1, b2, b3 = st.columns(3)
+            if b1.button("FCFS", use_container_width=True):
+                state["active_algorithm"] = "FCFS"
+            if b2.button("SSTF", use_container_width=True):
+                state["active_algorithm"] = "SSTF"
+            if b3.button("SCAN", use_container_width=True):
+                state["active_algorithm"] = "SCAN"
+
+            if st.button("Auto Optimize", type="primary", use_container_width=True):
+                chosen = _auto_select_algorithm(len(queue))
+                state["active_algorithm"] = chosen
+                if chosen == "SSTF":
+                    st.success("System selected SSTF because it minimizes seek time by choosing closest request.")
+                elif chosen == "SCAN":
+                    st.success("System selected SCAN for large queues to balance movement and fairness.")
+                else:
+                    st.success("System selected FCFS for small queue simplicity.")
+
+            current_algo = state["active_algorithm"]
+            notes = ALGO_NOTES.get(current_algo, ALGO_NOTES["FCFS"])
+            st.markdown("### > TEACHING OVERLAY")
+            
+            st.info(f"**What it does:** {notes['what']}\n\n**Why used:** {notes['why']}")
+            
+            col_pros, col_cons = st.columns(2)
+            with col_pros:
+                st.success(f"**Pros:** {notes['pros']}")
+            with col_cons:
+                st.warning(f"**Cons:** {notes['cons']}")
                 
-                algo_names = []
-                total_seeks = []
-                avg_seeks = []
-                
-                rows = []
-                for algo_name, result in results.items():
-                    stats = calculate_result_metrics(result)
-                    algo_names.append(algo_name)
-                    total_seeks.append(round(stats["total_seek"], 2))
-                    avg_seeks.append(round(stats["average_seek"], 2))
+            with st.expander("Show Logic Pseudo-code"):
+                st.code(notes["logic"], language="text")
+
+            run_col, compare_col = st.columns(2)
+            if run_col.button("RUN SELECTED ALGORITHM", use_container_width=True):
+                if not queue:
+                    st.error("Unified I/O queue is empty. Cannot execute scheduling.")
+                else:
+                    result = run_algorithm(current_algo, execution_queue, state["current_head"])
+                    state["last_result"] = result
+                    if result.head_positions:
+                        state["current_head"] = result.head_positions[-1]
+                    state["device_event_log"].append(f"[SERVICE] Unified Queue -> {result.execution_order}")
+                    st.success("Execution complete.")
+
+            if compare_col.button("COMPARE FCFS / SSTF / SCAN", use_container_width=True):
+                if not queue:
+                    st.warning("Queue empty. Add requests for comparison.")
+                else:
+                    results = compare_algorithms(execution_queue, state["current_head"])
                     
-                    rows.append(
-                        {
-                            "Algorithm": algo_name,
-                            "Order": str(result.execution_order),
-                            "Total Time": round(stats["total_seek"], 2),
-                            "Avg Time": round(stats["average_seek"], 2),
-                        }
+                    algo_names = []
+                    total_seeks = []
+                    avg_seeks = []
+                    
+                    rows = []
+                    for algo_name, result in results.items():
+                        stats = calculate_result_metrics(result)
+                        algo_names.append(algo_name)
+                        total_seeks.append(round(stats["total_seek"], 2))
+                        avg_seeks.append(round(stats["average_seek"], 2))
+                        
+                        rows.append(
+                            {
+                                "Algorithm": algo_name,
+                                "Order": str(result.execution_order),
+                                "Total Time": round(stats["total_seek"], 2),
+                                "Avg Time": round(stats["average_seek"], 2),
+                            }
+                        )
+                    st.markdown("#### Performance Comparison")
+                    
+                    # Bar chart for Total Seek Time
+                    fig = px.bar(
+                        x=algo_names, 
+                        y=total_seeks, 
+                        text=total_seeks,
+                        labels={'x': 'Algorithm', 'y': 'Total Seek Time'},
+                        title="Total Seek Time Comparison",
+                        template="plotly_dark",
+                        color=algo_names,
+                        color_discrete_sequence=['#00ffcc', '#ff00ff', '#ffff00']
                     )
-                st.markdown("#### Performance Comparison")
-                
-                # Bar chart for Total Seek Time
-                fig = px.bar(
-                    x=algo_names, 
-                    y=total_seeks, 
-                    text=total_seeks,
-                    labels={'x': 'Algorithm', 'y': 'Total Seek Time'},
-                    title="Total Seek Time Comparison",
-                    template="plotly_dark",
-                    color=algo_names,
-                    color_discrete_sequence=['#00ffcc', '#ff00ff', '#ffff00']
-                )
-                fig.update_traces(textposition='outside')
-                fig.update_layout(
-                    paper_bgcolor="rgba(0,0,0,0)", 
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    height=350,
-                    margin=dict(l=20, r=20, t=40, b=20)
-                )
-                st.plotly_chart(fig, use_container_width=True)
-                
-                st.dataframe(rows, use_container_width=True, hide_index=True)
-                st.caption("Lower total seek time = better movement efficiency in this simulation.")
+                    fig.update_traces(textposition='outside')
+                    fig.update_layout(
+                        paper_bgcolor="rgba(0,0,0,0)", 
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        height=350,
+                        margin=dict(l=20, r=20, t=40, b=20)
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    st.dataframe(rows, use_container_width=True, hide_index=True)
+                    st.caption("Lower total seek time = better movement efficiency in this simulation.")
 
-        st.markdown("### > EXECUTION EXPLAINER")
-        _render_stepwise_explainer(state.get("last_result"))
+            st.markdown("### > EXECUTION EXPLAINER")
+            _render_stepwise_explainer(state.get("last_result"))
+            
+        elif mode == "Dedicated Mode":
+            st.markdown("### > DEDICATED ALGORITHM ANALYSIS")
+            st.caption("Deep-dive visualization for individual algorithms simulating from current head position.")
+            
+            results = compare_algorithms(execution_queue, state["current_head"])
+            algo_tabs = st.tabs(["FCFS", "SSTF", "SCAN"])
+            
+            for i, algo in enumerate(["FCFS", "SSTF", "SCAN"]):
+                with algo_tabs[i]:
+                    _render_dedicated_panel(algo, results.get(algo))
+                    
+            st.divider()
+            st.markdown("### > ALGORITHM PERFORMANCE LINKS")
+            _render_performance_summary(results)
 
         if st.button("> BACK TO OS DASHBOARD", use_container_width=True):
             run_layer_transition(
