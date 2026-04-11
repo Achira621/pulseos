@@ -89,13 +89,15 @@ _ALGO_DEEP = {
 
 # ─── Per-algorithm panel renderer ─────────────────────────────────────────────
 
-def _render_algo_panel(algo_name: str, result, initial_head: int) -> None:
+def _render_algo_panel(algo_name: str, result, initial_head: int, queue: list = None) -> None:
     """
     Purpose: Render a full deep-dive panel for a single algorithm.
-    Input: algo_name (str), result (ScheduleResult), initial_head (int).
-    Output: Streamlit UI components with table, graph, and explanation.
+    Input: algo_name (str), result (ScheduleResult), initial_head (int), queue (list[IORequest]).
+    Output: Streamlit UI components with table, graph, queue state, Gantt, and explanation.
     Failure Handling: Each section wrapped independently; degrades gracefully.
     """
+    if queue is None:
+        queue = []
     info = _ALGO_DEEP.get(algo_name, _ALGO_DEEP["FCFS"])
     color = info["color"]
 
@@ -213,6 +215,172 @@ def _render_algo_panel(algo_name: str, result, initial_head: int) -> None:
     except Exception:
         pass
 
+    # ── Queue state visualizer (NEW) ──────────────────────────────────────────
+    _render_queue_state(algo_name, result, queue, color)
+
+    # ── Gantt chart (NEW) ─────────────────────────────────────────────────────
+    _render_gantt_chart(algo_name, result, queue, color)
+
+
+# ─── Gantt chart ─────────────────────────────────────────────────────────────
+
+def _render_gantt_chart(algo_name: str, result, queue, color: str) -> None:
+    """
+    Purpose: Render a Gantt-style timeline showing when each I/O request is serviced.
+    Input: algo_name (str), result (ScheduleResult), queue (list[IORequest]), color (str).
+    Output: Plotly horizontal bar chart — X=time, Y=Request ID.
+    Failure Handling: Wrapped in try-except; shows caption on failure.
+    """
+    try:
+        st.markdown("##### 📅 Gantt Chart — Request Service Timeline")
+        if not result or not result.execution_order:
+            st.info("Gantt chart will appear after the algorithm runs.")
+            return
+
+        # Build a lookup: request_id -> arrival_time
+        arrival_map = {req.request_id: getattr(req, "arrival_time", 0.0) for req in queue}
+
+        bars = []
+        for idx, req_id in enumerate(result.execution_order):
+            seek = result.seek_times[idx] if idx < len(result.seek_times) else 0.0
+            burst = 0.0
+            for req in queue:
+                if req.request_id == req_id:
+                    burst = getattr(req, "burst_time", 10.0)
+                    break
+            start_t = result.completion_times[idx] - seek - burst if idx < len(result.completion_times) else 0.0
+            end_t = result.completion_times[idx] if idx < len(result.completion_times) else start_t + seek + burst
+            bars.append({
+                "ReqID": f"Req #{req_id}",
+                "Start": round(start_t, 2),
+                "Finish": round(end_t, 2),
+                "Seek": round(seek, 2),
+                "Burst": round(burst, 2),
+                "Step": idx + 1,
+            })
+
+        fig = go.Figure()
+        bar_colors = [color, "#8f7a6b", "#6b7f8f", "#8f6b8f", "#7f8f6b"]
+        for i, bar in enumerate(bars):
+            duration = bar["Finish"] - bar["Start"]
+            fig.add_trace(go.Bar(
+                x=[duration],
+                y=[bar["ReqID"]],
+                orientation="h",
+                base=bar["Start"],
+                marker=dict(
+                    color=bar_colors[i % len(bar_colors)],
+                    opacity=0.85,
+                    line=dict(color="#1a1a1a", width=1),
+                ),
+                text=f"Step {bar['Step']} | Seek:{bar['Seek']} Burst:{bar['Burst']}",
+                textposition="inside",
+                textfont=dict(size=9, color="#d6d6d6"),
+                name=bar["ReqID"],
+                showlegend=False,
+                hovertemplate=(
+                    f"<b>{bar['ReqID']}</b><br>"
+                    f"Start: {bar['Start']}<br>"
+                    f"End: {bar['Finish']}<br>"
+                    f"Seek: {bar['Seek']} | Burst: {bar['Burst']}<extra></extra>"
+                ),
+            ))
+
+        fig.update_layout(
+            xaxis_title="Time (seek + burst)",
+            yaxis_title="Request",
+            yaxis=dict(autorange="reversed"),
+            template="plotly_dark",
+            height=max(220, 40 + len(bars) * 36),
+            margin=dict(l=20, r=20, t=10, b=30),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(family="Courier New", size=10, color="#d6d6d6"),
+            bargap=0.25,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("Each bar = one request. Width = seek time + burst time. Left-edge = service start.")
+    except Exception:
+        st.caption("Gantt chart unavailable.")
+
+
+# ─── Queue state visualizer ───────────────────────────────────────────────────
+
+def _render_queue_state(algo_name: str, result, queue, color: str) -> None:
+    """
+    Purpose: Show all requests on the track axis, colored by service order for this algorithm.
+    Input: algo_name (str), result (ScheduleResult), queue (list[IORequest]), color (str).
+    Output: Plotly scatter — X=track, colored by order served (green=early, red=late).
+    Failure Handling: Wrapped in try-except; shows caption on failure.
+    """
+    try:
+        st.markdown("##### 🗂️ Queue State — Track Distribution & Service Order")
+        if not queue:
+            st.info("No requests in queue.")
+            return
+
+        # Build service-order map for this algorithm
+        order_map = {}
+        if result and result.execution_order:
+            for step, req_id in enumerate(result.execution_order):
+                order_map[req_id] = step + 1
+
+        tracks, ids, orders, labels, priorities = [], [], [], [], []
+        for req in queue:
+            tracks.append(req.track)
+            ids.append(req.request_id)
+            step = order_map.get(req.request_id, 0)
+            orders.append(step)
+            priorities.append(getattr(req, "priority", 5))
+            label = f"Req #{req.request_id}\nTrack:{req.track}\nServed: Step {step}" if step else f"Req #{req.request_id}\nTrack:{req.track}"
+            labels.append(label)
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=tracks,
+            y=[0] * len(tracks),
+            mode="markers+text",
+            marker=dict(
+                size=[max(10, p * 3) for p in priorities],
+                color=orders if orders else [0] * len(tracks),
+                colorscale=[[0, "#3a3a3a"], [0.5, color], [1.0, "#d4c56a"]],
+                showscale=True,
+                colorbar=dict(
+                    title="Serve Order",
+                    thickness=10,
+                    len=0.6,
+                    tickfont=dict(size=8, color="#d6d6d6"),
+                    titlefont=dict(size=9, color="#d6d6d6"),
+                ),
+                line=dict(color="#333", width=1),
+                symbol="circle",
+            ),
+            text=[f"#{r}" for r in ids],
+            textposition="top center",
+            textfont=dict(size=9, color="#d6d6d6"),
+            customdata=labels,
+            hovertemplate="%{customdata}<extra></extra>",
+            name="Requests",
+        ))
+        # Horizontal axis line for visual clarity
+        fig.add_hline(y=0, line=dict(color="#333", width=1, dash="dot"))
+
+        fig.update_layout(
+            xaxis_title="Disk Track Number",
+            yaxis=dict(showticklabels=False, showgrid=False, zeroline=False, range=[-0.5, 0.8]),
+            template="plotly_dark",
+            height=180,
+            margin=dict(l=20, r=60, t=10, b=40),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(family="Courier New", size=10, color="#d6d6d6"),
+            showlegend=False,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("Dot size = priority. Color = service order (brighter = served later). Darker = served earlier.")
+    except Exception:
+        st.caption("Queue state chart unavailable.")
+
 
 # ─── Summary comparison bar ───────────────────────────────────────────────────
 
@@ -315,13 +483,13 @@ def render_dedicated_algo_view() -> None:
         ])
 
         with tab_fcfs:
-            _render_algo_panel("FCFS", results.get("FCFS"), initial_head)
+            _render_algo_panel("FCFS", results.get("FCFS"), initial_head, queue)
 
         with tab_sstf:
-            _render_algo_panel("SSTF", results.get("SSTF"), initial_head)
+            _render_algo_panel("SSTF", results.get("SSTF"), initial_head, queue)
 
         with tab_scan:
-            _render_algo_panel("SCAN", results.get("SCAN"), initial_head)
+            _render_algo_panel("SCAN", results.get("SCAN"), initial_head, queue)
 
         _render_dedicated_summary(results, initial_head)
 
