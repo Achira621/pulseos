@@ -17,6 +17,7 @@ from utils.state import (
     set_layer,
 )
 from animations.transitions import run_layer_transition
+from views.dedicated_algo_view import render_dedicated_algo_view
 
 ALGO_NOTES = {
     "FCFS": {
@@ -247,6 +248,26 @@ def _render_performance_summary(results) -> None:
 
 
 def render_scheduler_view() -> None:
+    """
+    Purpose: Top-level scheduler entry point — presents Unified / Dedicated mode tabs.
+    Input: None (reads from session state).
+    Output: Renders selected mode.
+    Failure Handling: Falls back to unified on error.
+    """
+    try:
+        mode_tab_unified, mode_tab_dedicated = st.tabs([
+            "⚡  Unified Mode",
+            "🔬  Dedicated Analysis Mode",
+        ])
+        with mode_tab_unified:
+            _render_unified_scheduler_impl()
+        with mode_tab_dedicated:
+            render_dedicated_algo_view()
+    except Exception as exc:
+        st.error(f"Mode switch fault: {exc}")
+
+
+def _render_unified_scheduler_impl() -> None:
     try:
         state = get_system_state()
         devices = state["connected_devices"]
