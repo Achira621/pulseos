@@ -197,6 +197,155 @@ def _render_dedicated_panel(algo_name: str, result) -> None:
     else:
         st.info("Move the slider to start the simulation.")
 
+def _render_per_device_queues(queue: list, device_names: list) -> None:
+    """
+    Purpose: Show individual device queues filtered from the master io_queue.
+    Input: queue (list[IORequest]), device_names (list[str]).
+    Output: One expander per connected device showing its pending requests + mini scatter.
+    Failure Handling: Wrapped in try-except; skips devices silently on error.
+    """
+    try:
+        st.markdown("### > INDIVIDUAL DEVICE QUEUES")
+        st.caption("Each connected device's pending I/O requests, filtered from the unified queue.")
+        if not device_names:
+            st.info("No devices connected.")
+            return
+        for dev in device_names:
+            dev_reqs = [req for req in queue if getattr(req, "target_device", "") == dev]
+            badge = f"({len(dev_reqs)} request{'s' if len(dev_reqs) != 1 else ''})"
+            with st.expander(f"📦 {dev}  {badge}", expanded=len(dev_reqs) > 0):
+                if not dev_reqs:
+                    st.caption("No pending requests for this device.")
+                    continue
+                rows = [
+                    {
+                        "ID": r.request_id,
+                        "Track": r.track,
+                        "Priority": r.priority,
+                        "Burst": r.burst_time,
+                    }
+                    for r in dev_reqs
+                ]
+                st.dataframe(rows, use_container_width=True, hide_index=True)
+                # Mini track scatter
+                try:
+                    tracks = [r.track for r in dev_reqs]
+                    ids    = [r.request_id for r in dev_reqs]
+                    prios  = [r.priority for r in dev_reqs]
+                    fig = go.Figure(go.Scatter(
+                        x=tracks,
+                        y=[0] * len(tracks),
+                        mode="markers+text",
+                        marker=dict(
+                            size=[max(8, p * 3) for p in prios],
+                            color=prios,
+                            colorscale="Viridis",
+                            showscale=False,
+                            line=dict(color="#333", width=1),
+                        ),
+                        text=[f"#{i}" for i in ids],
+                        textposition="top center",
+                        textfont=dict(size=9, color="#d6d6d6"),
+                    ))
+                    fig.update_layout(
+                        xaxis_title="Track",
+                        yaxis=dict(showticklabels=False, showgrid=False, zeroline=False, range=[-0.6, 0.8]),
+                        template="plotly_dark",
+                        height=130,
+                        margin=dict(l=20, r=20, t=6, b=30),
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        font=dict(family="Courier New", size=9, color="#d6d6d6"),
+                        showlegend=False,
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                except Exception:
+                    pass
+    except Exception:
+        st.caption("Per-device queue view unavailable.")
+
+
+def _render_gantt_unified(result, queue: list) -> None:
+    """
+    Purpose: Render a Gantt chart in the Unified Scheduler after algorithm execution.
+    Input: result (ScheduleResult), queue (list[IORequest]).
+    Output: Horizontal bar Gantt — Y=Request, X=time axis showing seek + burst segments.
+    Failure Handling: Wrapped in try-except; shows caption on failure.
+    """
+    try:
+        st.markdown("### > GANTT CHART — Scheduling Timeline")
+        st.caption("Each bar = one I/O request. Left segment = seek time (head travel). Right segment = burst time (service). Total width = completion span.")
+        if not result or not result.execution_order:
+            st.info("Run an algorithm to see the Gantt chart.")
+            return
+
+        burst_map = {req.request_id: getattr(req, "burst_time", 10.0) for req in queue}
+
+        fig = go.Figure()
+        SEEK_COLOR  = "#6b8f71"
+        BURST_COLOR = "#8f7a6b"
+
+        for idx, req_id in enumerate(result.execution_order):
+            seek  = result.seek_times[idx]  if idx < len(result.seek_times)  else 0.0
+            comp  = result.completion_times[idx] if idx < len(result.completion_times) else 0.0
+            burst = burst_map.get(req_id, 10.0)
+            service_start = comp - burst
+            seek_start    = service_start - seek
+            label = f"Req #{req_id}"
+
+            # Seek segment (head travel)
+            fig.add_trace(go.Bar(
+                x=[seek],
+                y=[label],
+                orientation="h",
+                base=seek_start,
+                name="Seek" if idx == 0 else "",
+                showlegend=idx == 0,
+                marker=dict(color=SEEK_COLOR, opacity=0.75, line=dict(color="#1a1a1a", width=1)),
+                hovertemplate=f"<b>{label}</b><br>Seek: {round(seek,2)}<br>Start: {round(seek_start,2)}<extra></extra>",
+                text=f"seek {round(seek,1)}",
+                textposition="inside",
+                textfont=dict(size=8, color="#d6d6d6"),
+            ))
+            # Burst segment (I/O service)
+            fig.add_trace(go.Bar(
+                x=[burst],
+                y=[label],
+                orientation="h",
+                base=service_start,
+                name="Burst" if idx == 0 else "",
+                showlegend=idx == 0,
+                marker=dict(color=BURST_COLOR, opacity=0.85, line=dict(color="#1a1a1a", width=1)),
+                hovertemplate=f"<b>{label}</b><br>Burst: {round(burst,2)}<br>Done @: {round(comp,2)}<extra></extra>",
+                text=f"burst {round(burst,1)}",
+                textposition="inside",
+                textfont=dict(size=8, color="#d6d6d6"),
+            ))
+
+        fig.update_layout(
+            barmode="overlay",
+            xaxis_title="Time (cumulative seek + burst)",
+            yaxis_title="Request",
+            yaxis=dict(autorange="reversed"),
+            template="plotly_dark",
+            height=max(260, 50 + len(result.execution_order) * 38),
+            margin=dict(l=20, r=20, t=10, b=40),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(family="Courier New", size=10, color="#d6d6d6"),
+            bargap=0.3,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(size=10)),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        # Summary row
+        if result.completion_times:
+            total_span = result.completion_times[-1]
+            st.caption(f"Total scheduling span: **{round(total_span, 2)}** time units  |  "
+                       f"🟩 Green = seek (head travel)  |  🟫 Amber = burst (I/O service)")
+    except Exception:
+        st.caption("Gantt chart unavailable.")
+
+
 def _render_performance_summary(results) -> None:
     algo_names = []
     total_seeks = []
@@ -353,6 +502,9 @@ def _render_unified_scheduler_impl() -> None:
             )
             st.plotly_chart(fig_queue, use_container_width=True)
 
+        # Per-device individual queues (NEW)
+        _render_per_device_queues(queue, device_names)
+
         use_priority = st.checkbox("Apply priority sorting before algorithm", value=False)
         execution_queue = _priority_sorted(queue) if use_priority else list(queue)
 
@@ -460,6 +612,9 @@ def _render_unified_scheduler_impl() -> None:
 
             st.markdown("### > EXECUTION EXPLAINER")
             _render_stepwise_explainer(state.get("last_result"))
+
+            # Gantt chart after algorithm runs (NEW)
+            _render_gantt_unified(state.get("last_result"), queue)
             
         elif mode == "Dedicated Mode":
             st.markdown("### > DEDICATED ALGORITHM ANALYSIS")
