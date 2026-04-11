@@ -46,6 +46,90 @@ ALGO_NOTES = {
     },
 }
 
+# ─── Predefined I/O request presets ──────────────────────────────────────────
+# Each preset is a list of dicts: {track, priority, burst, label}
+_PRESET_REQUESTS = {
+    "📚 Classic OS Textbook": {
+        "desc": "Standard textbook example (head=200). Tracks: 98, 183, 37, 122, 14, 124, 65, 67.",
+        "head": 200,
+        "requests": [
+            {"track": 98,  "priority": 5, "burst": 10.0},
+            {"track": 183, "priority": 5, "burst": 10.0},
+            {"track": 37,  "priority": 5, "burst": 10.0},
+            {"track": 122, "priority": 5, "burst": 10.0},
+            {"track": 14,  "priority": 5, "burst": 10.0},
+            {"track": 124, "priority": 5, "burst": 10.0},
+            {"track": 65,  "priority": 5, "burst": 10.0},
+            {"track": 67,  "priority": 5, "burst": 10.0},
+        ],
+    },
+    "🎯 Clustered (SSTF Friendly)": {
+        "desc": "Requests near the head — ideal for SSTF. Low total seek.",
+        "head": 500,
+        "requests": [
+            {"track": 480, "priority": 7, "burst": 8.0},
+            {"track": 510, "priority": 6, "burst": 8.0},
+            {"track": 495, "priority": 8, "burst": 8.0},
+            {"track": 520, "priority": 5, "burst": 8.0},
+            {"track": 470, "priority": 7, "burst": 8.0},
+            {"track": 505, "priority": 6, "burst": 8.0},
+        ],
+    },
+    "⚡ Scattered (SCAN Friendly)": {
+        "desc": "Requests spread across the full disk. SCAN handles this better than SSTF.",
+        "head": 100,
+        "requests": [
+            {"track": 50,  "priority": 5, "burst": 12.0},
+            {"track": 200, "priority": 5, "burst": 12.0},
+            {"track": 400, "priority": 5, "burst": 12.0},
+            {"track": 600, "priority": 5, "burst": 12.0},
+            {"track": 800, "priority": 5, "burst": 12.0},
+            {"track": 900, "priority": 5, "burst": 12.0},
+            {"track": 750, "priority": 5, "burst": 12.0},
+        ],
+    },
+    "🔄 Alternating (FCFS Worst Case)": {
+        "desc": "Requests alternate between far ends. Shows FCFS inefficiency.",
+        "head": 500,
+        "requests": [
+            {"track": 50,  "priority": 5, "burst": 10.0},
+            {"track": 950, "priority": 5, "burst": 10.0},
+            {"track": 100, "priority": 5, "burst": 10.0},
+            {"track": 900, "priority": 5, "burst": 10.0},
+            {"track": 150, "priority": 5, "burst": 10.0},
+            {"track": 850, "priority": 5, "burst": 10.0},
+        ],
+    },
+    "⚖️ Mixed Priority": {
+        "desc": "Same tracks, varied priorities. Useful for testing priority-sorting mode.",
+        "head": 300,
+        "requests": [
+            {"track": 300, "priority": 1,  "burst": 15.0},
+            {"track": 350, "priority": 10, "burst": 5.0},
+            {"track": 250, "priority": 3,  "burst": 8.0},
+            {"track": 400, "priority": 8,  "burst": 6.0},
+            {"track": 200, "priority": 5,  "burst": 10.0},
+            {"track": 450, "priority": 9,  "burst": 4.0},
+        ],
+    },
+    "🔥 Heavy Load": {
+        "desc": "10 requests spread across disk — stress test for all algorithms.",
+        "head": 50,
+        "requests": [
+            {"track": 90,  "priority": 6, "burst": 9.0},
+            {"track": 200, "priority": 4, "burst": 11.0},
+            {"track": 310, "priority": 7, "burst": 8.0},
+            {"track": 420, "priority": 5, "burst": 10.0},
+            {"track": 530, "priority": 8, "burst": 7.0},
+            {"track": 640, "priority": 3, "burst": 12.0},
+            {"track": 750, "priority": 9, "burst": 6.0},
+            {"track": 860, "priority": 2, "burst": 14.0},
+            {"track": 970, "priority": 6, "burst": 9.0},
+            {"track": 130, "priority": 7, "burst": 8.0},
+        ],
+    },
+}
+
 
 def _auto_select_algorithm(queue_size: int) -> str:
     try:
@@ -396,6 +480,54 @@ def _render_performance_summary(results) -> None:
         st.plotly_chart(fig, use_container_width=True)
 
 
+def _render_preset_requests(device_names: list) -> None:
+    """
+    Purpose: Show predefined I/O request scenarios as quick-load buttons.
+    Input: device_names (list[str]) to assign requests to the first connected device.
+    Output: Expander with preset selector + load button; does NOT touch manual entry.
+    Failure Handling: Wrapped in try-except; skips silently on error.
+    """
+    try:
+        with st.expander("⚡ QUICK LOAD — Predefined Scenarios", expanded=False):
+            st.caption("Select a scenario and click Load to populate the queue instantly. Designed for demo and viva.")
+            preset_names = list(_PRESET_REQUESTS.keys())
+            chosen = st.selectbox("Scenario", preset_names, index=0, key="preset_selector")
+            preset = _PRESET_REQUESTS[chosen]
+
+            # Show preview table
+            st.markdown(f"**{chosen}** — {preset['desc']}")
+            st.markdown(f"*Recommended head start: **{preset['head']}***")
+            preview_rows = [
+                {"Step": i + 1, "Track": r["track"], "Priority": r["priority"], "Burst": r["burst"]}
+                for i, r in enumerate(preset["requests"])
+            ]
+            st.dataframe(preview_rows, use_container_width=True, hide_index=True)
+
+            target_dev = device_names[0] if device_names else "Disk Drive"
+            if len(device_names) > 1:
+                target_dev = st.selectbox("Assign to device", device_names, index=0, key="preset_device")
+
+            load_col, head_col = st.columns([2, 1])
+            with head_col:
+                reset_head = st.checkbox("Reset head to preset start", value=True, key="preset_head")
+            with load_col:
+                if st.button(f"⚡ LOAD '{chosen}'", type="primary", use_container_width=True):
+                    try:
+                        state = get_system_state()
+                        if reset_head:
+                            state["current_head"] = preset["head"]
+                        added = 0
+                        for req in preset["requests"]:
+                            if add_io_request(req["track"], req["priority"], req["burst"], target_dev):
+                                added += 1
+                        st.success(f"Loaded {added} requests from '{chosen}' into {target_dev}.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Load failed: {e}")
+    except Exception:
+        pass
+
+
 def render_scheduler_view() -> None:
     """
     Purpose: Top-level scheduler entry point — presents Unified / Dedicated mode tabs.
@@ -444,6 +576,11 @@ def _render_unified_scheduler_impl() -> None:
 
         # Input + queue control
         st.markdown("### > I/O REQUEST INPUT")
+
+        # Predefined presets (NEW) — sits above manual entry
+        _render_preset_requests(device_names)
+
+        st.markdown("#### Manual Entry")
         c0, c1, c2, c3 = st.columns(4)
         target_device = c0.selectbox("Target Device", options=device_names, index=0)
         track = c1.number_input("Track Number", min_value=0, max_value=999, value=500)
